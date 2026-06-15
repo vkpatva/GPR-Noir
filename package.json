@@ -1,0 +1,9 @@
+{
+  "name": "noir-gpr-ed25519",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@noble/curves": "^1.6.0",
+    "@noble/hashes": "^1.5.0"
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "scheme": "ed25519",
+  "schema": [
+    {
+      "name": "contentHash",
+      "type": "hash"
+    },
+    {
+      "name": "institution",
+      "type": "string"
+    },
+    {
+      "name": "eventDate",
+      "type": "number"
+    },
+    {
+      "name": "accessionNumber",
+      "type": "string"
+    },
+    {
+      "name": "subjectPerson",
+      "type": "string"
+    },
+    {
+      "name": "classificationId",
+      "type": "number"
+    }
+  ],
+  "disclose": {
+    "contentHash": "9792b0b056e460837480c458febbed034ebfae777dcae29d307ef0593d91dc81",
+    "institution": "Mass General Hospital",
+    "eventDate": 20260615,
+    "accessionNumber": "ACC-2024-0091",
+    "subjectPerson": "Jane Q. Doe",
+    "classificationId": 2
+  },
+  "fields": [
+    "2893690653471497581963532916173320946841180163883442124995073415933487864958",
+    "7742233648871247781472985255645836230593331299189100023821896852490457294599",
+    "20260615",
+    "13236158230410631074447085343532611802935314074428767485963107984325362299609",
+    "19223775676427514340176746063922099339564923872357589144754242905030185539729",
+    "2"
+  ],
+  "canonicalRowHex": "0665c557b34f80064b8ff3357a37e3ebd623f59e109e90e964d90f9d6d91dc7e111df2eeb45ba6e7b8eeb2d5a546f6330b2ee4475939ac3575ebf8e65db5a70700000000000000000000000000000000000000000000000000000000013527071d43666b3275d51afbe3105cb1d3e1f5cd32e8cf4c7b09947a938f0d2bd3b2d92a80457dc8ce8e8d75f27137ca0fb62155d8ae276ca84da1057b32a9b9e558910000000000000000000000000000000000000000000000000000000000000002",
+  "msgHash": "4b1a1929d1d567b7498d2fdd0d4ac7a3ed4e6de2288f3dbcb4c47ca9b71781d7",
+  "signature": "5e89be9681218d5edd6ed7b2b55d7b0120f29420fe2a067cecaad143d11108e8d2ce7ffdc942242fac076ae4c1cf371da12697068750c0127b502985e994f00e",
+  "publicKey": "c88b437652eed5302d4ab6eee55fbfb3efb9c7e660099dd76eb12db79a36b3fe"
+}
