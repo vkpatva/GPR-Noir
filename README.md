@@ -3,13 +3,14 @@
 Zero-knowledge **selective disclosure** over a normally-signed GPR (GAMI Proof Record) row.
 
 A GPR row is signed **once, as a whole**, with a single **Ed25519** signature — no per-field
-salts, no commitments, no Merkle tree, just one ordinary signature. At proof time the holder
-chooses, freshly, which subset of fields to reveal and proves in zero-knowledge:
+salts, no commitments, no Merkle tree, just one ordinary signature. The **same institute** that
+issued the row later chooses, at proof time, which subset of fields to reveal and proves in
+zero-knowledge to **any verifier**:
 
-> "I hold a row `R` and a valid issuer Ed25519 signature over its canonical hash, and `R`
+> "We hold a row `R` and a valid Ed25519 signature over its canonical hash, and `R`
 > contains these specific field values — without revealing anything else in `R`."
 
-The full row and the signature are **private** inputs; the issuer public key, the signed hash,
+The full row and the signature are **private** inputs; the institute public key, the signed hash,
 and the disclosure request (mask + claimed values) are **public** inputs.
 
 Ed25519 has no turnkey verifier in Noir, so the **Edwards-curve verification is implemented from
@@ -28,12 +29,83 @@ checking, on the edwards25519 curve:
 
 There are two layers: what the **circuit** proves, and what the **verifier** then checks.
 
+### End-to-end flow
+
+The institute both **signs** the GPR row and **generates** the zk proof. The verifier can be
+anyone — a regulator, partner lab, patient portal, etc. — who receives the proof and checks it
+without seeing the hidden fields.
+
+```
+  Institute (issuer + prover)                         Anyone (verifier)
+  ───────────────────────────                         ─────────────────
+    │                                                       │
+    │  build GPR row, Ed25519-sign it                       │
+    │────────────┐                                          │
+    │            │                                          │
+    │◄───────────┘                                          │
+    │                                                       │
+    │  pick disclosure mask (full row stays private)        │
+    │  nargo execute + bb prove                             │
+    │────────────┐                                          │
+    │            │                                          │
+    │◄───────────┘                                          │
+    │                                                       │
+    │  zk proof + public_inputs                             │
+    ├──────────────────────────────────────────────────────►│
+    │                                                       │  recompute k
+    │                                                       │  bb verify
+    │                                                       │  read disclosed fields
+    │                                                       │
+```
+
+### In-circuit vs off-circuit
+
+```
+  PRIVATE WITNESS                 IN-CIRCUIT (src/main.nr)              PUBLIC INPUTS
+  (hidden in the proof)           ────────────────────────              (in the proof)
+  ───────────────
+
+  fields  ─────────────────────►  (1) SHA256(serialize) == msg_hash ──► msg_hash
+  a_x, a_y,                       (2) check_point: A and R are         a_compressed
+  r_x, r_y  ───────────────────►     on-curve and match compressed  ──► r_compressed
+  s_be  ───────────────────────►  (3) [S]*B == R + [k]*A  ◄────────── k_be
+  fields + mask  ──────────────►  (4) mask*(field-disclosed)==0  ───► disclosed_mask
+                                                                       disclosed_values
+
+
+                                  OFF-CIRCUIT (verify.ts + bb)
+                                  ────────────────────────────
+                                  k = SHA512(R || A || msg_hash) mod L
+                                  bb verify (SNARK check)
+                                  decode + re-hash disclosed strings
+```
+
+**What the symbols mean**
+
+| Symbol | Role | Plain English |
+|--------|------|---------------|
+| `fields` | private | The full GPR row (all schema fields as field elements). Never leaves the proof. |
+| `msg_hash` | public | `SHA256` of the canonical row bytes — this is what the institute signed (`M` in Ed25519). |
+| `A` / `a_compressed` | public | The institute's **Ed25519 public key** (32-byte compressed point). Identifies who signed the row. |
+| `R` / `r_compressed` | public | The **nonce point** from the signature (first 32 bytes of the 64-byte Ed25519 sig). Not the GPR row `R`. |
+| `a_x`, `a_y` | private | Affine **x** and **y** coordinates of public key `A`, decompressed off-circuit. The circuit checks they lie on the curve and recompress to `a_compressed`. |
+| `r_x`, `r_y` | private | Affine **x** and **y** coordinates of nonce point `R`, same validation as above. Avoids doing `sqrt` decompression inside the circuit. |
+| `S` / `s_be` | private | The **signature scalar** (second 32 bytes of the Ed25519 sig), big-endian in the witness. Used in `[S]*B`. |
+| `k` / `k_be` | public | The Ed25519 challenge `SHA512(R ‖ A ‖ msg_hash) mod L`. Recomputed by the verifier (see trade-off below) and passed in; the circuit checks the curve equation with it. |
+| `disclosed_mask` | public | One `0` or `1` per schema field — `1` means "reveal this field". |
+| `disclosed_values` | public | The claimed value for each field; only enforced where `mask[i] == 1`. |
+| `B` | (constant) | The Ed25519 base point; fixed in `curve.nr`, not an input. |
+
+In short: the institute keeps the **full row** and **raw signature parts** private; the verifier
+only sees the **public key**, **signed hash**, **signature points** (`A`, `R`), **challenge** `k`,
+and whichever **field values the mask selects**.
+
 ### What the circuit enforces (`src/main.nr`)
 
 Over a private row + signature, all of these must hold at once — if any fails, no proof exists:
 
 1. **Re-hash the row:** `SHA256(canonical_serialize(fields)) == msg_hash` — binds the hidden row
-   to the exact bytes the issuer signed.
+   to the exact bytes the institute signed.
 2. **Validate the points:** the witness coordinates of `A` and `R` are on-curve **and**
    recompress to the public `a_compressed` / `r_compressed`, so the witness can't swap in a
    different point (this sidesteps in-circuit `sqrt` decompression).
@@ -41,14 +113,74 @@ Over a private row + signature, all of these must hold at once — if any fails,
 4. **Enforce disclosures:** `mask[i] * (fields[i] - disclosed_values[i]) == 0` — revealed fields
    must equal the claimed value; hidden fields stay unconstrained.
 
-So a valid proof means: *a genuinely issuer-signed row exists with those disclosed values, and
+So a valid proof means: *a genuinely institute-signed row exists with those disclosed values, and
 nothing else leaks.*
 
 ### What the verifier does
 
-The verifier already holds the issuer key `A`, the signed hash `msg_hash`, and `R` (out of
-band). It runs `bb verify` on the proof + public inputs, and `verify.ts` reads the disclosed
-values straight from the public inputs.
+Anyone with the proof file, `public_inputs`, and verification key can verify — no access to the
+institute's private key or full row is needed. They should already know (or trust out-of-band)
+which institute public key `A` signed the record. `verify.ts` runs `bb verify`, then reads the
+disclosed values straight from `public_inputs`.
+
+### What gets revealed (and how the verifier reconfirms)
+
+The proof **never leaks hidden fields**. Revelation is entirely explicit: the institute picks the
+mask when it runs `prove.ts`. Only fields with `mask[i] = 1` are written into `public_inputs`;
+everything else stays in the private witness and is never published.
+
+**Reveal nothing** (`mask = 0,0,0,0,0,0`) is valid. The disclosure constraint
+`mask[i] * (fields[i] - disclosed_values[i]) == 0` is vacuous when every mask bit is `0`, so the
+proof only shows *"a genuinely institute-signed GPR row exists"* (via `msg_hash` + Ed25519) without
+exposing any field content.
+
+**What the institute sends the verifier**
+
+| Artifact | Required? | Purpose |
+|----------|-----------|---------|
+| `proof` | yes | the zk-SNARK |
+| `public_inputs` | yes | issuer key, `msg_hash`, `k`, mask, disclosed field elements (bundled with the proof) |
+| `disclosure.json` | recommended | human-readable labels for strings/hashes (written by `prove.ts` alongside the proof) |
+| `vk` | yes | verification key (`target/proofs/<mask>/vk`) |
+
+Hidden fields are never sent. The institute does **not** need to share plaintext for fields the
+mask left at `0`.
+
+**Example** — mask `001100` reveals `eventDate` and `accessionNumber` only:
+
+| Field | In `public_inputs`? | Human-readable form |
+|-------|---------------------|---------------------|
+| `eventDate` (number) | yes — `20260615` directly | verifier reads the integer from the proof |
+| `accessionNumber` (string) | yes — but only as `SHA256(utf8) mod p` | institute must also share `"ACC-2024-0091"` (in `disclosure.json` or any channel) |
+| `subjectPerson`, etc. | no — mask is `0` | not shared, not in the proof |
+
+**How the verifier reconfirms disclosed values**
+
+There are two layers — one cryptographic, one human-readable:
+
+1. **`bb verify` (the real guarantee)** — confirms that every `disclosed_values[i]` where
+   `mask[i] = 1` really equals `fields[i]` in the hidden signed row. The verifier never sees
+   `fields` directly; the SNARK math guarantees the public commitments match the signed row.
+   A wrong claimed value fails at prove time (`--tamper-value` acceptance check).
+
+2. **`verify.ts` decode + re-hash (human-readable check)** — after `bb verify` passes, reads
+   field elements from `public_inputs` and maps them back to readable form:
+   - **number** — value is already in the proof; nothing extra to share.
+   - **string** — takes the plaintext the institute shared, re-hashes it, and checks
+     `encodeStringToField(plaintext) == disclosed_values[i]` (`✓ re-hash matches`).
+   - **hash** — takes the digest hex the institute shared and checks it reduces to the field
+     element (`✓ digest matches`).
+
+`disclosure.json` is a convenience sidecar for display — the cryptographic truth is always in
+`public_inputs`. If the institute lies about a string in `disclosure.json`, the re-hash check
+fails. If they lie in `public_inputs`, `bb verify` fails.
+
+```
+Institute picks mask  →  only those fields enter public_inputs
+Institute shares proof + public_inputs + (for strings) the plaintext
+Verifier: bb verify   →  "committed values match a signed row"
+Verifier: re-hash     →  "plaintext they gave me matches the commitment"
+```
 
 ### The trade-off — the SHA-512 challenge `k` is computed off-circuit
 
@@ -58,6 +190,21 @@ expensive on top of the already-heavy curve math. Instead, because `R`, `A`, and
 circuit only checks the curve equation.
 
 This stays sound — the prover can't fake `k`, and the chain holds end-to-end:
+
+```
+  private fields ──(1) SHA256 in-circuit──► msg_hash (public)
+                                                    │
+           r_compressed (public) ───────────────────┤
+           a_compressed (public) ───────────────────┤
+                                                    ▼
+                              k_be (public) ◄── SHA512 mod L off-circuit
+                                                    │
+  private s_be ─────────────────────────────────────┤
+                                                    ▼
+                              (3) [S]*B == R + [k]*A  in-circuit  ──► valid signature
+
+  private fields ──(4) disclosure in-circuit──► only masked values public
+```
 
 - in-circuit `SHA256(fields) == msg_hash` binds the row to the message `M`,
 - the verifier derives `k` from the public `R, A, M`,
